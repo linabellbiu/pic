@@ -1,5 +1,10 @@
 use anyhow::Result;
-use axum::{extract::Path, http::StatusCode, routing::get, AddExtensionLayer, Router};
+use axum::{
+    extract::{Extension, Path},
+    http::{HeaderMap, HeaderValue, StatusCode},
+    routing::get,
+    AddExtensionLayer, Router,
+};
 use bytes::Bytes;
 use lru::LruCache;
 use percent_encoding::{percent_decode_str, percent_encode, NON_ALPHANUMERIC};
@@ -14,7 +19,10 @@ use tokio::sync::Mutex;
 use tower::ServiceBuilder;
 use tracing::{info, instrument};
 
+mod engine;
 mod pb;
+use engine::{Engine, Photon};
+use image::ImageOutputFormat;
 
 use pb::*;
 
@@ -56,14 +64,32 @@ async fn main() {
         .unwrap();
 }
 
-// 目前我们就只把参数解析出来
-async fn generate(Path(Params { spec, url }): Path<Params>) -> Result<String, StatusCode> {
-    let url = percent_decode_str(&url).decode_utf8_lossy();
+async fn generate(
+    Path(Params { spec, url }): Path<Params>,
+    Extension(cache): Extension<Cache>,
+) -> Result<(HeaderMap, Vec<u8>), StatusCode> {
     let spec: ImageSpec = spec
         .as_str()
         .try_into()
         .map_err(|_| StatusCode::BAD_REQUEST)?;
-    Ok(format!("url: {}\n spec: {:#?}", url, spec))
+    let url: &str = &percent_decode_str(&url).decode_utf8_lossy();
+    let data = retrieve_image(&url, cache)
+        .await
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    // 使用 image engine 处理
+    let mut engine: Photon = data
+        .try_into()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    engine.apply(&spec.specs);
+
+    let image = engine.generate(ImageOutputFormat::Jpeg(85));
+
+    info!("Finished processing: image size {}", image.len());
+    let mut headers = HeaderMap::new();
+
+    headers.insert("content-type", HeaderValue::from_static("image/jpeg"));
+    Ok((headers, image))
 }
 
 #[instrument(level = "info", skip(cache))]
