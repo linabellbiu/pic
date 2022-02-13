@@ -2,10 +2,10 @@ use anyhow::Result;
 use axum::{
     extract::{Extension, Path},
     http::{HeaderMap, HeaderValue, StatusCode},
-    routing::get,
-    AddExtensionLayer, Router,
+    AddExtensionLayer, Router, routing::get,
 };
 use bytes::Bytes;
+use image::ImageOutputFormat;
 use lru::LruCache;
 use percent_encoding::{percent_decode_str, percent_encode, NON_ALPHANUMERIC};
 use serde::Deserialize;
@@ -19,31 +19,26 @@ use tokio::sync::Mutex;
 use tower::ServiceBuilder;
 use tracing::{info, instrument};
 
-mod engine;
 mod pb;
+mod engine;
 use engine::{Engine, Photon};
-use image::ImageOutputFormat;
-
 use pb::*;
 
-// 参数使用 serde 做 Deserialize，axum 会自动识别并解析
 #[derive(Deserialize)]
 struct Params {
     spec: String,
     url: String,
 }
-
 type Cache = Arc<Mutex<LruCache<u64, Bytes>>>;
 
 #[tokio::main]
 async fn main() {
     // 初始化 tracing
     tracing_subscriber::fmt::init();
-
     let cache: Cache = Arc::new(Mutex::new(LruCache::new(1024)));
-
     // 构建路由
-    let app = Router::new() // `GET /image` 会执行 generate 函数，并把 spec 和 url 传递过去
+    let app = Router::new()
+        // `GET /` 会执行
         .route("/image/:spec/:url", get(generate))
         .layer(
             ServiceBuilder::new()
@@ -56,7 +51,7 @@ async fn main() {
 
     print_test_url("https://images.pexels.com/photos/1562477/pexels-photo-1562477.jpeg?auto=compress&cs=tinysrgb&dpr=3&h=750&w=1260");
 
-    tracing::debug!("listening on {}", addr);
+    info!("Listening on {}", addr);
 
     axum::Server::bind(&addr)
         .serve(app.into_make_service())
@@ -72,6 +67,7 @@ async fn generate(
         .as_str()
         .try_into()
         .map_err(|_| StatusCode::BAD_REQUEST)?;
+
     let url: &str = &percent_decode_str(&url).decode_utf8_lossy();
     let data = retrieve_image(&url, cache)
         .await
@@ -97,6 +93,7 @@ async fn retrieve_image(url: &str, cache: Cache) -> Result<Bytes> {
     let mut hasher = DefaultHasher::new();
     url.hash(&mut hasher);
     let key = hasher.finish();
+
     let g = &mut cache.lock().await;
     let data = match g.get(&key) {
         Some(v) => {
@@ -111,6 +108,7 @@ async fn retrieve_image(url: &str, cache: Cache) -> Result<Bytes> {
             data
         }
     };
+
     Ok(data)
 }
 
@@ -123,5 +121,5 @@ fn print_test_url(url: &str) {
     let image_spec = ImageSpec::new(vec![spec1, spec2, spec3]);
     let s: String = image_spec.borrow().into();
     let test_image = percent_encode(url.as_bytes(), NON_ALPHANUMERIC).to_string();
-    println!("test url: http://127.0.0.1:3000/image/{}/{}", s, test_image);
+    println!("test url: http://localhost:3000/image/{}/{}", s, test_image);
 }
